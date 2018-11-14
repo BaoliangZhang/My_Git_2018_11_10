@@ -158,13 +158,284 @@
 	begin
 		if(!Rst_N)
 			SCL_Low<=1'b0;
-		else if(SCL_Cnt==SCL_CNT_Max>>2+SCL_CNT_Max>>1)
+		else if(SCL_Cnt==(SCL_CNT_Max>>2)+(SCL_CNT_Max>>1))
 			SCL_Low<=1'b1;
 		else 
 			SCL_Low<=1'b0;
 	end
+	always@(posedge Clk or negedge Rst_N)
+	begin
+		if(!Rst_N)
+		begin
+			Main_State<=IDLE;
+			SDA_Reg<=1'b1;
+			W_Flag<=1'b0;
+			R_Flag<=1'b0;
+			Wr_Done<=1'b0;
+			Rd_Done<=1'b0;
+		end
+		else begin
+			case(Main_State)
+				IDLE:begin
+					SDA_Reg<=1'b1;
+					W_Flag<=1'b0;
+					R_Flag<=1'b0;
+					Wr_Done<=1'b0;
+					Rd_Done<=1'b0;
+					if(Wr)begin
+						Main_State<=WR_START;
+						W_Flag<=1'b1;
+					end
+					else if(Rd)begin
+						Main_State<=RD_START;
+						R_Flag<=1'b1;
+					end
+					else
+						Main_State<=IDLE;
+				end
+				WR_START:begin
+					if(SCL_Low)begin
+						Main_State<=WR_CTRL;
+						SDA_Data_Out<=Wr_Ctrl_Word;
+						FF<=1'b0;
+					end
+					else if(SCL_High)begin
+						SDA_Reg<=1b'0;
+						Main_State<=WR_START;
+					end
+					else
+						Main_State<=WR_START;
+				end
+				
+				WR_CTRL:begin
+					if(FF==1'b0)
+						Send_8bit_Data;
+					else begin
+						if(ACK==1'b1)begin
+							if(SCL_Low)begin
+								Main_State<=WR_WADDR;
+								FF<=1'b0;
+								SDA_Data_Out<=Word_Addr;
+							end
+							else
+								Main_State<=WR_CTRL;
+						end
+						else
+							Main_State<=IDLE;
+					end
+				end
+				
+				WR_WADDR:begin
+					if(FF==1'b0)
+						Send_8bit_Data;
+					else begin
+						if(ACK==1'b1)begin
+							if(W_Flag&&SCL_Low)begin
+								Main_State<=WR_DATA;
+								SDA_Data_Out<=Wr_Data;
+								FF<=1'b0;
+							end
+							else if(R_Flag&&SCL_Low)begin
+								Main_State<=RD_MSTOP;
+								SDA_Reg<=1'b0;
+							end
+							else
+								Main_State<=WR_WADDR;
+						end	
+							Main_State<=IDLE;
+					end
+				end
+				
+				WR_DATA:begin
+					if(FF==1'b0)
+						Send_8bit_Data;
+					else begin
+						if(ACK==1'b1)begin
+							if(SCL_Low)begin
+								Main_State<=STOP;
+								SDA_Reg<=1'b0;
+							end
+							else
+								Main_State<=WR_DATA;
+						end
+						else
+							Main_State<=IDLE;
+					end
+				end
+				RD_MSTOP:begin
+					if(SCL_Low)begin
+						Main_State<=RD_START;
+					end
+					else if(SCL_High)begin
+						Main_State<=RD_MSTOP;
+					end
+					else
+						Main_State<=RD_MSTOP;
+				end
+				
+				RD_START:begin
+					if(SCL_Low)begin
+						Main_State<=RD_CTRL;
+						SDA_Data_Out<=Rd_Ctrl_Word;
+						FF<=1'b0;
+					end
+					else if(SCL_High)begin
+						Main_State<=RD_START;
+						SDA_Reg<=1'b0;
+					end
+					else
+						Main_State<=RD_START;
+				end
+				
+				RD_CTRL:begin
+					if(FF==1'b0)
+						Send_8bit_Data;
+					else begin
+						if(ACK==1'b1)begin
+							if(SCL_Low)begin
+								Main_State<=RD_DATA;
+								FF<=1'b0;
+							end
+							else
+								Main_State<=RD_CTRL;
+						end
+						else
+							Main_State<=IDLE;
+					end
+				end
+				RD_DATA:begin
+					if(FF==1'b0)
+						Receive_8bit_Data;
+					else begin
+						SDA_Reg<=1'b1;
+						if(SCL_Low)begin
+							Main_State<=STOP;
+							SDA_Reg<=1'b0;
+						end
+						else
+							Main_State<=RD_DATA;
+					end
+				end
+				STOP:begin
+					if(SCL_High)begin
+						SDA_Reg<=1'b1;
+						Main_State<=IDLE;
+						if(W_Flag)
+							Wr_Done<=1'b1;
+						else if(R_Flag)
+							Rd_Done<=1'b1;
+						else
+						;
+						end;
+					else
+						Main_State<=STOP;	
+				end
+				default:
+					Main_State<=IDLE;
+			endcase
+		end
+	end
 	
+	//SDA串行接收和发送时SCl高低电平计数器
+	always@(posedge Clk or negedge Rst_N)
+	if(!Rst_N)
+		Halfbit_Cnt<=1'b0;
+	else if((Main_State==WR_CTRL)||(Main_State==WR_WADDR)||(Main_State==WR_DATA)
+			||(Main_State==RD_CTRL)||(Main_State==RD_DATA))
+		begin
+			if(SCL_Low|SCL_High)begin
+				if(Halfbit_Cnt==8'd17)
+					Halfbit_Cnt<=8'd0;
+				else 
+					Halfbit_Cnt<=Halfbit_Cnt+8'd1;
+			end
+			else
+				Halfbit_Cnt<=Halfbit_Cnt;
+		end
+	else
+		Halfbit_Cnt<=8'd0;
+	//数据接收方对发送方的响应检测标志位
+	always@(posedge Clk or negedge Rst_N)
+	if(!Rst_N)
+		ACK<=1'b0;
+	else if((Halfbit_Cnt==8'd16)&&SCL_High&&(SDA==1'b0))
+		ACk<=1'b1;
+	else if((Halfbit_Cnt==8'd17)&&SCL_Low)
+		ACK<=1'b0;
+	else 
+		ACK<=ACK;
+		
+	//串行输出任务
+	task Send_8bit_Data;
+		if(SCL_High&&(Halfbit_Cnt==8'd16))
+			FF<=1;
+		else if(Halfbit_Cnt<8'd17)begin
+			SDA_Reg<=SDA_Data_Out[7];
+			if(SCL_Low)
+				SDA_Data_Out={SDA_Data_Out[6:0],1'b0};
+			else
+				SDA_Data_Out<=SDA_Data_Out;
+		end
+		else
+			;
+	endtask
+	//串行接收任务
+		task Receive_8bit_Data;
+		if(SCL_Low&&(Halfbit_Cnt==8'd15))
+			FF<=1;
+		else if(Halfbit_Cnt<8'd15)begin
+			SDA_Reg<=SDA_Data_Out[7];
+			if(SCL_High)
+				SDA_Data_In={SDA_Data_In[6:0],SDA};
+			else
+				SDA_Data_In<=SDA_Data_In;
+		end
+		else
+			;
+	endtask
 	
+	//SDA三态使能SDA_En
+	
+	always@(*)
+	begin
+		case(Main_State)
+			IDLE:
+				SDA_En=1'b0;
+			WR_START,RD_START,RD_MSTOP,STOP:
+				SDA_En=1'b1;
+			WR_CTRL,WR_WADDR,WR_DATA,RD_CTRL:
+				if(Halfbit_Cnt<16)
+					SDA_En=1'b1;
+				else
+					SDA_En=1'b0;
+			RD_DATA:
+				if(Halfbit_Cnt<16)
+					SDA_En=1'b0;
+				else
+					SDA_En=1'b1;
+			default:
+				SDA_En=1'b0;
+		endcase
+	end
+	assign Wr_Data_Vaild=((Main_State==WR_WADDR)&&(W_Flag&&SCL_Low)&&(ACK==1'b1));
+	assign Rdata_Vaild_R=((Main_State==RD_DATA)&&(Halfbit_Cnt==8'15)&&SCL_Low);
+	//读取数据有效标志位
+	always@(posedge Clk or negedge Rst_N)
+	if(!Rst_N)
+		Rd_Data_Vaild<=1'b0;
+	else if(Rdata_Vaild_R)
+		Rd_Data_Vaild<=1'b1;
+	else 
+		Rd_Data_Vaild<=1'b0;
+	
+	//读出数据
+	always@(posedge Clk or negedge Rst_N)
+	if(!Rst_N)
+		Rd_Data<=8'd0;
+	else if(Rd_Data_Vaild)
+		Rd_Data<=SDA_Data_In;
+	else
+		Rd_Data<=Rd_Data;
  endmodule
  
  
